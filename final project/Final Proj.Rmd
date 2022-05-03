@@ -1,0 +1,238 @@
+---
+title: "Final Project MATH 208"
+author: "Shuo Wang"
+date: "12/12/2021"
+output: pdf_document
+---
+
+## Environment setting
+
+```{r}
+library(magrittr)
+library(tidyverse)
+library(ggplot2)
+library(patchwork)
+library(rpart)
+library(rpart.plot)
+```
+
+### Data set loading
+
+```{r}
+df<- read.csv("Final_Project_FlixGem.csv")
+```
+
+# TASK ONE
+
+## A.
+
+### Data Cleaning
+
+```{r}
+#delet NA values of specific variables
+#only keep movies, delet series
+#To ensure the accuracy of result, I drop NA values of each variable pair respectively 
+HGS_Rt<-df %>% drop_na(c(Hidden.Gem.Score,Runtime)) %>% filter(Series.or.Movie=='Movie')
+
+HGS_Lan<-df %>% drop_na(c(Hidden.Gem.Score,Languages)) %>% filter(Series.or.Movie=='Movie')
+
+```
+
+### Plot to visualize the relationship between variables
+
+```{r}
+#From the plot below, movies runtime with 30-60 mins earn the highest score(above 7.5)
+#movies less than 30 mins performs well with around 7.5
+#movies longer than 1 hour, earned score less than 5.0 near 3.25.
+#note that there are no movie longer than 2 hour with score 7.5 or better. 
+p<-ggplot(data=HGS_Rt,
+       mapping = aes(
+         x=Runtime,
+         y=Hidden.Gem.Score
+         )
+       )+geom_boxplot()+labs(title="Hidden gem score VS Runtime")
+print(p)
+```
+
+```{r}
+#We pick the top ten languages to do the next analysis
+a<-HGS_Lan%>% count(Languages,sort=TRUE) 
+head(a)
+aa<-a%>% top_n(10) #use the top 10 languages to analyse
+b<-as.vector(aa$Languages)
+c<-HGS_Lan %>%filter(Languages %in% b) %>% summarize(Hidden.Gem.Score,Languages)
+head(c)
+```
+
+### From the box-plot of top ten languages (includes multi-language) , we can see that the Asian(Japanese,Korean,Chinese) movies have better score, in particular, Japanese has the highest median(8.0) and most Korean movies distribute within the interval (6.5,8).English movies have lowest score most below 4.0.
+
+```{r}
+ggplot(data=c,
+       mapping = aes(
+         x=Languages,
+         y=Hidden.Gem.Score
+         )
+       )+geom_boxplot()+labs(title="Hidden gem score VS Languages")
+```
+
+## B
+
+```{r}
+#data cleaning
+reviews<-df%>% drop_na(c(Hidden.Gem.Score,IMDb.Score,Rotten.Tomatoes.Score,Metacritic.Score))%>% filter(Series.or.Movie=='Movie')%>%select(Hidden.Gem.Score,IMDb.Score,Rotten.Tomatoes.Score,Metacritic.Score)
+head(reviews)
+```
+
+Use2-D histogram to find if there are correlation between review site scores and Hidden Gem score.
+
+```{r}
+
+p1<-ggplot(reviews,aes(x=Hidden.Gem.Score,y=Rotten.Tomatoes.Score))+stat_bin2d(bins=50)+ggtitle("R.tomatoe VS Hidden.Gem")
+p2<-ggplot(reviews,aes(x=Hidden.Gem.Score,y=IMDb.Score))+stat_bin2d(bins=50)+ggtitle("IMDb.score VS Hidden.Gem")
+p3<-ggplot(reviews,aes(x=Hidden.Gem.Score,y=Metacritic.Score))+stat_bin2d(bins=50)+ggtitle("Metacritic.Score VS Hidden.Gem")
+p1+p2+p3
+
+
+```
+
+**conclusion**: The tree plots all show the linear correlation between scores. Hidden.Gem.Score strongly has correlation to both Rotten.Tomatoes and Metacritic scores. IMDb.score not that strongly as the other two, but still clearly demonstrate the correlation especially in higher score part.
+
+## C
+
+**By the Hidden gem score VS Runtime Plot, it draw conclusions contrary to company's theory, that is people prefer the 30-60 mins films rather than longer length movies.**
+
+# TASK TWO
+
+### pre_code dataset
+
+```{r}
+dtset<-df%>% filter(Series.or.Movie=='Movie',Languages %in% b) %>% select(Hidden.Gem.Score,Languages,Runtime,IMDb.Score,Metacritic.Score,Rotten.Tomatoes.Score) %>% drop_na()
+head(dtset)
+```
+
+set trainset and testset
+
+```{r}
+set.seed(514)
+ind=sample(2,nrow(dtset),replace = T,prob = c(0.8,0.2))
+trainset<-dtset[ind==1,]
+testset<-dtset[ind==2,]
+
+#dimension of trianset and testset
+dim(trainset)
+dim(testset)
+```
+
+use rpart function generate a regression tree model
+
+```{r}
+tree<-rpart(Hidden.Gem.Score~.,data=trainset,method = "anova")
+
+rpart.plot(tree,4)
+```
+
+### visualize cross validation error vs cost complexity value
+
+```{r}
+plotcp(tree)
+```
+
+### find the node of the min record of a cross-validated error
+
+```{r}
+which.min(tree$cptable[,"xerror"])
+
+```
+
+### get cp value of the min xerror
+
+```{r}
+tree.cp<-tree$cptable[6,"CP"]
+tree.cp
+```
+
+### model performance improvement(prune tree)
+
+```{r}
+prune.tree<-prune(tree,cp=tree.cp)
+rpart.plot(prune.tree,4)
+```
+
+### [Conclusion]{.ul}: the most important factor is ROTTEN TOMATOES SCORE, languages as second, IMDb score comes third.
+
+the minimum cross validation error is 0.5066283
+
+```{r}
+prune.tree$cptable
+```
+
+# TASK THREE
+
+### Dataset Recoding
+
+```{r}
+df1<-df%>% filter(Series.or.Movie=='Movie')%>% drop_na() %>% group_by(Director) %>% summarise(Hidden.Gem.Score, .groups = 'drop') %>% add_count(Director) %>% rename(Num_Movies=n)
+head(df1)
+```
+
+```{r}
+nrow(df1)#find how many rows in df1
+```
+
+### Algorithm of H-index
+
+#### By comparing each score with number of movies from a director, get the number of TURE results if match then the number is the H-index, if not continue to compare with n-1 number of movies until match.
+
+### step 0
+
+```{r}
+# to speed up the process we first remove the director with only 1 and 2 movie.
+# but this step is optional
+df2<-df1 %>% filter(Num_Movies!=1&Num_Movies!=2) 
+nrow(df2)#number of rows after optimization
+```
+
+#### step 1 :create a new tibble with directors names 
+
+```{r}
+director_names<-as.vector(unique(df2$Director)) 
+n=length(director_names)
+dtf<-tibble("directors"=director_names,"H_index"="plog_in values later")
+```
+
+#### step2: calculate the H-index of each directors by using for loops
+
+```{r}
+for (i in 1:n){
+    tag<-dtf$directors[i] #chose the ith name in the director name list
+    df3<-df2 %>% filter(Director==tag)
+    HS<-df3$Hidden.Gem.Score
+    NM<-df3$Num_Movies
+    N=NM[1]#total movies
+ 
+    for(j in 0:N){
+    #cat("i is",i,"j is ",j,"N-j is",N-j)
+    
+    result<-(HS>=(N-j))
+
+    nTrue<-sum(result) #find how many movies scores >= movies numbers
+   # cat("N-j is---",N-j,"----Ntrue is",nTrue,"===")
+    if(nTrue>=(N-j)){
+      H_Index<-N-j
+      dtf$H_index[i]<-H_Index
+      break
+      
+      }
+  }
+  }
+head(dtf,n=20)
+
+```
+
+#### step3:display the top 10 H_index directors
+
+#### There are 17 directors with highest Hidden.Gem.Score H_INDEX = 4
+
+```{r}
+dtf %>% top_n(10)
+```
